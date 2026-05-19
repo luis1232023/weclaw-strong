@@ -62,8 +62,8 @@ func NewServeAgent(cfg ServeAgentConfig) *ServeAgent {
 		systemPrompt: cfg.SystemPrompt,
 		cwd:          cfg.Cwd,
 		env:          cfg.Env,
-		sessions:     make(map[string]string),
-		client:       &http.Client{Timeout: 120 * time.Second},
+		sessions: make(map[string]string),
+		client:   &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -267,28 +267,49 @@ func (a *ServeAgent) ChatAsync(ctx context.Context, conversationID, message stri
 	}, nil
 }
 
-// PollReplies polls GET /session/:id/message?limit=1 every 500ms and calls
-// callback when a finished assistant reply is found. Times out after 2 minutes.
+// PollReplies polls GET /session/:id/message every 500ms and calls
+// callback for each new finished assistant reply. Times out after 2 minutes.
 func (a *ServeAgent) PollReplies(ctx context.Context, pr PendingReply, callback ReplyCallback) {
 	go func() {
+		// Fetch baseline — record existing message count to skip pre-existing messages
+		_, totalCount, err := a.fetchNewReplies(ctx, pr.SessionID, 0)
+		if err != nil {
+			log.Printf("[serve-agent] poll baseline error for session %s: %v", pr.SessionID, err)
+			return
+		}
+		lastCount := totalCount
+
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		deadline := time.After(120 * time.Second)
+		idleRounds := 0
+		gotReply := false
 
 		for {
 			select {
 			case <-ticker.C:
-				reply, err := a.fetchLatestReply(ctx, pr.SessionID)
+				replies, total, err := a.fetchNewReplies(ctx, pr.SessionID, lastCount)
 				if err != nil {
 					log.Printf("[serve-agent] poll error for session %s: %v", pr.SessionID, err)
 					continue
 				}
-				if reply != "" {
-					callback(reply)
-					return
+				if len(replies) > 0 {
+					for _, reply := range replies {
+						callback(reply)
+					}
+					lastCount = total
+					gotReply = true
+					idleRounds = 0
+				} else if gotReply {
+					idleRounds++
+					if idleRounds >= 10 {
+						return
+					}
 				}
 			case <-deadline:
-				callback("请求超时，请重试")
+				if !gotReply {
+					callback("请求超时，请重试")
+				}
 				return
 			case <-ctx.Done():
 				return
@@ -436,31 +457,31 @@ func (a *ServeAgent) sendMessageAsync(ctx context.Context, sessionID, message st
 	return nil
 }
 
-// fetchLatestReply calls GET /session/:id/message?limit=1 and returns the
-// latest assistant's text reply. Returns empty string if no finished reply yet.
-func (a *ServeAgent) fetchLatestReply(ctx context.Context, sessionID string) (string, error) {
-	url := fmt.Sprintf("%s/session/%s/message?limit=1", a.baseURL, sessionID)
+// fetchNewReplies calls GET /session/:id/message and returns all new finished
+// assistant text replies with index >= lastCount, along with the total message count.
+func (a *ServeAgent) fetchNewReplies(ctx context.Context, sessionID string, lastCount int) ([]string, int, error) {
+	url := fmt.Sprintf("%s/session/%s/message", a.baseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("fetch messages request: %w", err)
+		return nil, 0, fmt.Errorf("fetch messages request: %w", err)
 	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch messages HTTP: %w", err)
+		return nil, 0, fmt.Errorf("fetch messages HTTP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("fetch messages HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, 0, fmt.Errorf("fetch messages HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read messages response: %w", err)
+		return nil, 0, fmt.Errorf("read messages response: %w", err)
 	}
-	log.Printf("[serve-agent] fetchLatestReply raw for session %s: %s", sessionID, string(bodyBytes))
+	log.Printf("[serve-agent] fetchNewReplies raw for session %s: %s", sessionID, string(bodyBytes))
 
 	var messages []struct {
 		Info struct {
@@ -473,10 +494,12 @@ func (a *ServeAgent) fetchLatestReply(ctx context.Context, sessionID string) (st
 		} `json:"parts"`
 	}
 	if err := json.Unmarshal(bodyBytes, &messages); err != nil {
-		return "", fmt.Errorf("parse messages: %w", err)
+		return nil, 0, fmt.Errorf("parse messages: %w", err)
 	}
 
-	for _, m := range messages {
+	var replies []string
+	for i := lastCount; i < len(messages); i++ {
+		m := messages[i]
 		if m.Info.Role == "assistant" && m.Info.Finish != "" {
 			var reply string
 			for _, p := range m.Parts {
@@ -485,11 +508,11 @@ func (a *ServeAgent) fetchLatestReply(ctx context.Context, sessionID string) (st
 				}
 			}
 			if reply != "" {
-				return reply, nil
+				replies = append(replies, reply)
 			}
 		}
 	}
-	return "", nil
+	return replies, len(messages), nil
 }
 
 // deleteSession calls DELETE /session/:id to clean up.
