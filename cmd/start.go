@@ -234,7 +234,7 @@ func runMonitorWithRestart(ctx context.Context, creds *ilink.Credentials, handle
 	}
 }
 
-// createAgentByName creates and starts an agent by its config name.
+// createAgentByName creates and starts an agent by its config name using the builder registry.
 // Returns nil if the agent is not configured or fails to start.
 func createAgentByName(ctx context.Context, cfg *config.Config, name string) agent.Agent {
 	agCfg, ok := cfg.Agents[name]
@@ -243,75 +243,12 @@ func createAgentByName(ctx context.Context, cfg *config.Config, name string) age
 		return nil
 	}
 
-	switch agCfg.Type {
-	case "acp":
-		ag := agent.NewACPAgent(agent.ACPAgentConfig{
-			Command:      agCfg.Command,
-			Args:         agCfg.Args,
-			Cwd:          agCfg.Cwd,
-			Env:          agCfg.Env,
-			Model:        agCfg.Model,
-			SystemPrompt: agCfg.SystemPrompt,
-		})
-		if err := ag.Start(ctx); err != nil {
-			log.Printf("[agent] failed to start ACP agent %q: %v", name, err)
-			return nil
-		}
-		log.Printf("[agent] started ACP agent: %s (command=%s, type=%s, model=%s)", name, agCfg.Command, agCfg.Type, agCfg.Model)
-		return ag
-	case "cli":
-		ag := agent.NewCLIAgent(agent.CLIAgentConfig{
-			Name:         name,
-			Command:      agCfg.Command,
-			Args:         agCfg.Args,
-			Cwd:          agCfg.Cwd,
-			Env:          agCfg.Env,
-			Model:        agCfg.Model,
-			SystemPrompt: agCfg.SystemPrompt,
-		})
-		log.Printf("[agent] created CLI agent: %s (command=%s, type=%s, model=%s)", name, agCfg.Command, agCfg.Type, agCfg.Model)
-		return ag
-	case "http":
-		if agCfg.Endpoint == "" {
-			log.Printf("[agent] HTTP agent %q has no endpoint", name)
-			return nil
-		}
-		ag := agent.NewHTTPAgent(agent.HTTPAgentConfig{
-			Endpoint:     agCfg.Endpoint,
-			APIKey:       agCfg.APIKey,
-			Headers:      agCfg.Headers,
-			Model:        agCfg.Model,
-			SystemPrompt: agCfg.SystemPrompt,
-			MaxHistory:   agCfg.MaxHistory,
-		})
-		log.Printf("[agent] created HTTP agent: %s (endpoint=%s, model=%s)", name, agCfg.Endpoint, agCfg.Model)
-		return ag
-	case "serve":
-		if agCfg.Command == "" {
-			log.Printf("[agent] serve agent %q has no command", name)
-			return nil
-		}
-		ag := agent.NewServeAgent(agent.ServeAgentConfig{
-			Name:         name,
-			Command:      agCfg.Command,
-			Args:         agCfg.Args,
-			Host:         agCfg.Host,
-			Port:         agCfg.Port,
-			Cwd:          agCfg.Cwd,
-			Env:          agCfg.Env,
-			Model:        agCfg.Model,
-			SystemPrompt: agCfg.SystemPrompt,
-		})
-		if err := ag.Start(ctx); err != nil {
-			log.Printf("[agent] failed to start serve agent %q: %v", name, err)
-			return nil
-		}
-		log.Printf("[agent] started serve agent: %s (url=%s, model=%s)", name, ag.Info().Command, agCfg.Model)
-		return ag
-	default:
-		log.Printf("[agent] unknown type %q for %q", agCfg.Type, name)
+	ag, err := agent.Build(ctx, agCfg, name)
+	if err != nil {
+		log.Printf("[agent] failed to create agent %q: %v", name, err)
 		return nil
 	}
+	return ag
 }
 
 // doLogin runs the interactive QR login flow and returns credentials.
