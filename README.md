@@ -151,6 +151,42 @@ Supported media types: images (png, jpg, gif, webp), videos (mp4, mov), files (p
 
 Set `WECLAW_API_ADDR` to change the listen address (e.g. `0.0.0.0:18011`).
 
+### API Authentication (Optional)
+
+When exposing the API to the public network, you can enable API Key authentication to prevent unauthorized access.
+
+**Configuration** (choose one):
+
+```json
+// ~/.weclaw/config.json
+{
+  "api_key": "your-secret-key-here"
+}
+```
+
+Or environment variable:
+```bash
+export WECLAW_API_KEY="your-secret-key-here"
+```
+
+**Usage after enabling:**
+
+```bash
+# Method 1: Authorization Bearer (Recommended)
+curl -X POST http://127.0.0.1:18011/api/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-key-here" \
+  -d '{"to": "user_id@im.wechat", "text": "Hello"}'
+
+# Method 2: X-API-Key Header
+curl -X POST http://127.0.0.1:18011/api/send \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key-here" \
+  -d '{"to": "user_id@im.wechat", "text": "Hello"}'
+```
+
+> **Note:** When `api_key` is not configured, the API remains open for backward compatibility. Recommended for local development only. Always enable authentication for public deployments.
+
 ## Configuration
 
 Config file: `~/.weclaw/config.json`
@@ -158,6 +194,9 @@ Config file: `~/.weclaw/config.json`
 ```json
 {
   "default_agent": "claude",
+  "api_addr": "127.0.0.1:18011",
+  "api_key": "your-secret-api-key",
+  "save_dir": "~/.weclaw/downloads",
   "agents": {
     "claude": {
       "type": "acp",
@@ -184,8 +223,21 @@ Config file: `~/.weclaw/config.json`
 }
 ```
 
+**Configuration fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_agent` | string | Default agent to use |
+| `api_addr` | string | HTTP API listen address (default: `127.0.0.1:18011`) |
+| `api_key` | string | API authentication key (optional, recommended for public deployments) |
+| `save_dir` | string | Directory to save downloaded images/files |
+| `agents` | object | Agent configurations |
+
 Environment variables:
 - `WECLAW_DEFAULT_AGENT` — override default agent
+- `WECLAW_API_ADDR` — override API listen address
+- `WECLAW_API_KEY` — override API authentication key
+- `WECLAW_SAVE_DIR` — override save directory
 - `OPENCLAW_GATEWAY_URL` — OpenClaw HTTP fallback endpoint
 - `OPENCLAW_GATEWAY_TOKEN` — OpenClaw API token
 

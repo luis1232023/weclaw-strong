@@ -15,6 +15,7 @@ import (
 type Server struct {
 	clients []*ilink.Client
 	addr    string
+	apiKey  string // API key for authentication, empty means no auth required
 }
 
 // NewServer creates an API server.
@@ -23,6 +24,14 @@ func NewServer(clients []*ilink.Client, addr string) *Server {
 		addr = "127.0.0.1:18011"
 	}
 	return &Server{clients: clients, addr: addr}
+}
+
+// NewServerWithAuth creates an API server with API key authentication.
+func NewServerWithAuth(clients []*ilink.Client, addr, apiKey string) *Server {
+	if addr == "" {
+		addr = "127.0.0.1:18011"
+	}
+	return &Server{clients: clients, addr: addr, apiKey: apiKey}
 }
 
 // SendRequest is the JSON body for POST /api/send.
@@ -35,7 +44,7 @@ type SendRequest struct {
 // Run starts the HTTP server. Blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/send", s.handleSend)
+	mux.HandleFunc("/api/send", s.requireAuth(s.handleSend))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
@@ -48,11 +57,44 @@ func (s *Server) Run(ctx context.Context) error {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("[api] listening on %s", s.addr)
+	authStatus := "auth disabled"
+	if s.apiKey != "" {
+		authStatus = "auth enabled"
+	}
+	log.Printf("[api] listening on %s (%s)", s.addr, authStatus)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+// requireAuth wraps a handler with API key authentication if configured.
+// Supports Authorization header with "Bearer <token>" format or "X-API-Key" header.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	if s.apiKey == "" {
+		return next // no auth required
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Check Authorization header first (Bearer token)
+		auth := r.Header.Get("Authorization")
+		if auth != "" {
+			const prefix = "Bearer "
+			if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
+				if auth[len(prefix):] == s.apiKey {
+					next(w, r)
+					return
+				}
+			}
+		}
+
+		// Fall back to X-API-Key header
+		if r.Header.Get("X-API-Key") == s.apiKey {
+			next(w, r)
+			return
+		}
+
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {

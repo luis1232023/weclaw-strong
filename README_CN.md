@@ -152,6 +152,42 @@ curl -X POST http://127.0.0.1:18011/api/send \
 
 设置 `WECLAW_API_ADDR` 环境变量可更改监听地址（如 `0.0.0.0:18011`）。
 
+### API 认证（可选）
+
+当 API 需要暴露在公网时，建议启用 API Key 认证，防止未授权访问。
+
+**配置方式**（二选一）：
+
+```json
+// ~/.weclaw/config.json
+{
+  "api_key": "your-secret-key-here"
+}
+```
+
+或环境变量：
+```bash
+export WECLAW_API_KEY="your-secret-key-here"
+```
+
+**启用后的调用方式：**
+
+```bash
+# 方式1：Authorization Bearer（推荐）
+curl -X POST http://127.0.0.1:18011/api/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-key-here" \
+  -d '{"to": "user_id@im.wechat", "text": "你好"}'
+
+# 方式2：X-API-Key Header
+curl -X POST http://127.0.0.1:18011/api/send \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key-here" \
+  -d '{"to": "user_id@im.wechat", "text": "你好"}'
+```
+
+> **注意：** 未配置 `api_key` 时，API 保持开放状态以兼容旧版本。建议仅在本地开发时保持开放，公网部署务必启用认证。
+
 ## 配置
 
 配置文件路径：`~/.weclaw/config.json`
@@ -159,6 +195,9 @@ curl -X POST http://127.0.0.1:18011/api/send \
 ```json
 {
   "default_agent": "claude",
+  "api_addr": "127.0.0.1:18011",
+  "api_key": "your-secret-api-key",
+  "save_dir": "~/.weclaw/downloads",
   "agents": {
     "claude": {
       "type": "acp",
@@ -185,9 +224,22 @@ curl -X POST http://127.0.0.1:18011/api/send \
 }
 ```
 
+**配置字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `default_agent` | string | 默认使用的 Agent |
+| `api_addr` | string | HTTP API 监听地址（默认：`127.0.0.1:18011`） |
+| `api_key` | string | API 认证密钥（可选，公网部署建议启用） |
+| `save_dir` | string | 下载图片/文件的保存目录 |
+| `agents` | object | Agent 配置 |
+
 环境变量：
 
 - `WECLAW_DEFAULT_AGENT` — 覆盖默认 Agent
+- `WECLAW_API_ADDR` — 覆盖 API 监听地址
+- `WECLAW_API_KEY` — 覆盖 API 认证密钥
+- `WECLAW_SAVE_DIR` — 覆盖保存目录
 - `OPENCLAW_GATEWAY_URL` — OpenClaw HTTP 回退地址
 - `OPENCLAW_GATEWAY_TOKEN` — OpenClaw API Token
 

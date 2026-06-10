@@ -174,7 +174,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if apiAddrFlag != "" {
 		apiAddr = apiAddrFlag
 	}
-	apiServer := api.NewServer(clients, apiAddr)
+	apiServer := api.NewServerWithAuth(clients, apiAddr, cfg.APIKey)
 	go func() {
 		if err := apiServer.Run(ctx); err != nil {
 			log.Printf("API server error: %v", err)

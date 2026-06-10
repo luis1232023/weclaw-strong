@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fastclaw-ai/weclaw/agent"
@@ -31,17 +32,18 @@ type AgentMeta struct {
 
 // Handler processes incoming WeChat messages and dispatches replies.
 type Handler struct {
-	mu            sync.RWMutex
-	defaultName   string
-	agents        map[string]agent.Agent // name -> running agent
-	agentMetas    []AgentMeta            // all configured agents (for /status)
-	agentWorkDirs map[string]string      // agent name -> configured/runtime cwd
-	customAliases map[string]string      // custom alias -> agent name (from config)
-	factory       AgentFactory
-	saveDefault   SaveDefaultFunc
-	contextTokens sync.Map   // map[userID]contextToken
-	saveDir       string     // directory to save images/files to
-	seenMsgs      sync.Map   // map[int64]time.Time — dedup by message_id
+	mu             sync.RWMutex
+	defaultName    string
+	agents         map[string]agent.Agent // name -> running agent
+	agentMetas     []AgentMeta            // all configured agents (for /status)
+	agentWorkDirs  map[string]string      // agent name -> configured/runtime cwd
+	customAliases  map[string]string      // custom alias -> agent name (from config)
+	factory        AgentFactory
+	saveDefault    SaveDefaultFunc
+	contextTokens  sync.Map   // map[userID]contextToken
+	saveDir        string     // directory to save images/files to
+	seenMsgs       sync.Map   // map[int64]time.Time — dedup by message_id
+	cleanupStarted atomic.Bool // ensures cleanup goroutine runs only once
 }
 
 // NewHandler creates a new message handler.
@@ -68,6 +70,24 @@ func (h *Handler) cleanSeenMsgs() {
 		}
 		return true
 	})
+}
+
+// startCleanupIfNeeded starts the background cleanup goroutine if not already running.
+// Uses sync.Once pattern to ensure only one cleanup goroutine exists.
+func (h *Handler) startCleanupIfNeeded() {
+	if h.cleanupStarted.CompareAndSwap(false, true) {
+		go h.periodicCleanup()
+	}
+}
+
+// periodicCleanup runs indefinitely, cleaning up old seen messages every 5 minutes.
+func (h *Handler) periodicCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		h.cleanSeenMsgs()
+	}
 }
 
 // SetCustomAliases sets custom alias mappings from config.
@@ -139,13 +159,14 @@ func (h *Handler) getAgent(ctx context.Context, name string) (agent.Agent, error
 }
 
 // getDefaultAgent returns the default agent (may be nil if not ready yet).
-func (h *Handler) getDefaultAgent() agent.Agent {
+// Returns both the agent and its name to avoid race conditions when accessing defaultName separately.
+func (h *Handler) getDefaultAgent() (agent.Agent, string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if h.defaultName == "" {
-		return nil
+		return nil, ""
 	}
-	return h.agents[h.defaultName]
+	return h.agents[h.defaultName], h.defaultName
 }
 
 // isKnownAgent checks if a name corresponds to a configured agent.
@@ -274,8 +295,8 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 		if _, loaded := h.seenMsgs.LoadOrStore(msg.MessageID, time.Now()); loaded {
 			return
 		}
-		// Clean up old entries periodically (fire-and-forget)
-		go h.cleanSeenMsgs()
+		// Start background cleanup goroutine if not already running
+		h.startCleanupIfNeeded()
 	}
 
 	// Extract text from item list (text message or voice transcription)
@@ -419,11 +440,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 // It immediately acknowledges the user, then dispatches the AI call in a
 // background goroutine. When the reply is ready, it is sent to the user.
 func (h *Handler) sendToDefaultAgent(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage, text, clientID string) {
-	h.mu.RLock()
-	defaultName := h.defaultName
-	h.mu.RUnlock()
-
-	ag := h.getDefaultAgent()
+	ag, defaultName := h.getDefaultAgent()
 	if ag == nil {
 		log.Printf("[handler] agent not ready, using echo mode for %s", msg.FromUserID)
 		reply := "[echo] " + text
@@ -433,21 +450,26 @@ func (h *Handler) sendToDefaultAgent(ctx context.Context, client *ilink.Client, 
 
 	// Try async path first (non-blocking with background polling)
 	if ac, ok := ag.(agent.AsyncChatter); ok {
-		pr, err := ac.ChatAsync(context.WithoutCancel(ctx), msg.FromUserID, text)
+		// Create background context with timeout for async operations
+		asyncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		pr, err := ac.ChatAsync(asyncCtx, msg.FromUserID, text)
 		if err != nil {
 			reply := fmt.Sprintf("Error: %v", err)
 			SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, NewClientID())
 			return
 		}
-		ac.PollReplies(context.WithoutCancel(ctx), pr, func(reply string) {
-			h.sendReplyWithMedia(context.WithoutCancel(ctx), client, msg, defaultName, reply, NewClientID())
+		ac.PollReplies(asyncCtx, pr, func(reply string) {
+			h.sendReplyWithMedia(asyncCtx, client, msg, defaultName, reply, NewClientID())
 		})
 		return
 	}
 
 	// Fallback: sync path in a goroutine
 	go func() {
-		bgCtx := context.WithoutCancel(ctx)
+		// Create background context with timeout
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
 
 		if typingErr := SendTypingState(bgCtx, client, msg.FromUserID, msg.ContextToken); typingErr != nil {
 			log.Printf("[handler] failed to send typing state: %v", typingErr)
@@ -611,7 +633,7 @@ func (h *Handler) switchDefault(ctx context.Context, name string) string {
 
 // resetDefaultSession resets the session for the given userID on the default agent.
 func (h *Handler) resetDefaultSession(ctx context.Context, userID string) string {
-	ag := h.getDefaultAgent()
+	ag, _ := h.getDefaultAgent()
 	if ag == nil {
 		return "No agent running."
 	}
@@ -632,7 +654,7 @@ func (h *Handler) handleCwd(trimmed string) string {
 	arg := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cwd"))
 	if arg == "" {
 		// No path provided — show current cwd of default agent
-		ag := h.getDefaultAgent()
+		ag, _ := h.getDefaultAgent()
 		if ag == nil {
 			return "No agent running."
 		}
@@ -707,7 +729,7 @@ func (h *Handler) handleSessionCommand(ctx context.Context, userID, trimmed stri
 		}
 	}
 
-	ag := h.getDefaultAgent()
+	ag, _ := h.getDefaultAgent()
 	if ag == nil {
 		return "No agent running."
 	}
@@ -751,7 +773,7 @@ func (h *Handler) handleSessionCommand(ctx context.Context, userID, trimmed stri
 
 // switchUserSession switches the current user's session to the given session ID.
 func (h *Handler) switchUserSession(ctx context.Context, userID, sessionID string) string {
-	ag := h.getDefaultAgent()
+	ag, _ := h.getDefaultAgent()
 	if ag == nil {
 		return "No agent running."
 	}
