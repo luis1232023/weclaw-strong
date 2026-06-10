@@ -47,11 +47,12 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 
 **Agent 接入模式：**
 
-| 模式 | 工作方式                                                         | 支持的 Agent                                            |
-| ---- | ---------------------------------------------------------------- | ------------------------------------------------------- |
-| ACP  | 长驻子进程，通过 stdio JSON-RPC 通信。速度最快，复用进程和会话。 | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw |
-| CLI  | 每条消息启动一个新进程，支持通过 `--resume` 恢复会话。           | Claude (`claude -p`)、Codex (`codex exec`)              |
-| HTTP | OpenAI 兼容的 Chat Completions API。                             | OpenClaw（HTTP 回退）                                   |
+| 模式  | 工作方式                                                  | 支持的 Agent                                               |
+| ----- | --------------------------------------------------------- | ---------------------------------------------------------- |
+| ACP   | 长驻子进程，通过 stdio JSON-RPC 通信。速度最快，复用进程和会话。 | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw    |
+| CLI   | 每条消息启动一个新进程，支持通过 `--resume` 恢复会话。           | Claude (`claude -p`)、Codex (`codex exec`)                 |
+| HTTP  | OpenAI 兼容的 Chat Completions API。                          | OpenClaw（HTTP 回退）                                      |
+| Serve | `opencode serve` 子进程 + REST API 通信。                    | OpenCode（serve 模式，支持会话管理）                       |
 
 同时存在 ACP 和 CLI 时，自动优先选择 ACP。
 
@@ -59,28 +60,31 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 
 在微信中发送以下命令：
 
-| 命令                    | 说明                     |
-| ----------------------- | ------------------------ |
-| `你好`                  | 发送给默认 Agent         |
-| `/codex 写一个排序函数` | 发送给指定 Agent         |
-| `/cc 解释一下这段代码`  | 通过别名发送             |
-| `/claude`               | 切换默认 Agent 为 Claude |
-| `/cwd /path/to/project` | 切换工作目录             |
-| `/new`                  | 开始新对话（清除会话）   |
-| `/info`                 | 查看当前 Agent 信息      |
-| `/help`                 | 查看帮助信息             |
+| 命令                        | 说明                       |
+| --------------------------- | -------------------------- |
+| `你好`                      | 发送给默认 Agent           |
+| `/claude 写一个排序函数`    | 发送给指定 Agent           |
+| `/cc 解释一下这段代码`      | 通过别名发送               |
+| `/cc @cx 帮我分析这段代码`  | 并行广播给多个 Agent       |
+| `/claude`                   | 切换默认 Agent 为 Claude   |
+| `/cwd /path/to/project`     | 切换工作目录               |
+| `/new` 或 `/clear`          | 开始新对话（清除会话）     |
+| `/info`                     | 查看当前 Agent 信息        |
+| `/session list [N]`         | 列出最近 N 条会话记录      |
+| `/session switch <id>`      | 切换到指定会话             |
+| `/help`                     | 查看帮助信息               |
 
 ### 快捷别名
 
-| 别名   | Agent    |
-| ------ | -------- |
-| `/cc`  | Claude   |
-| `/cx`  | Codex    |
-| `/cs`  | Cursor   |
-| `/km`  | Kimi     |
-| `/gm`  | Gemini   |
-| `/ocd` | OpenCode |
-| `/oc`  | OpenClaw |
+| 别名   | Agent          | 别名   | Agent          |
+| ------ | -------------- | ------ | -------------- |
+| `/cc`  | claude         | `/pi`  | pi             |
+| `/cx`  | codex          | `/cp`  | copilot        |
+| `/cs`  | cursor         | `/dr`  | droid          |
+| `/km`  | kimi           | `/if`  | iflow          |
+| `/gm`  | gemini         | `/kr`  | kiro           |
+| `/ocd` | opencode       | `/qw`  | qwen           |
+| `/oc`  | openclaw       | `/ocs` | opencode-serve |
 
 也可以在配置文件中为每个 Agent 自定义触发命令：
 
@@ -188,6 +192,48 @@ curl -X POST http://127.0.0.1:18011/api/send \
 
 > **注意：** 未配置 `api_key` 时，API 保持开放状态以兼容旧版本。建议仅在本地开发时保持开放，公网部署务必启用认证。
 
+## CLI Agent 管理
+
+除了编辑配置文件，也可以通过命令行管理 Agent：
+
+```bash
+# 列出所有已配置的 Agent
+weclaw agent list
+
+# 查看 Agent 详细配置
+weclaw agent info claude
+
+# 添加新 Agent
+weclaw agent add myagent \
+  --type acp \
+  --command /usr/local/bin/myagent \
+  --model gpt-4 \
+  --alias my,m \
+  --cwd /workspace
+
+# 删除 Agent
+weclaw agent remove myagent
+
+# 设置默认 Agent
+weclaw agent set-default claude
+
+# 测试 Agent 连通性
+weclaw agent test claude --message "hello"
+```
+
+**支持的 Agent 类型：** `acp` | `cli` | `http` | `serve`
+
+查看和修改配置：
+
+```bash
+# 显示完整配置
+weclaw config show
+
+# 会话管理（需要运行中的 weclaw）
+weclaw session list
+weclaw session switch <session-id>
+```
+
 ## 配置
 
 配置文件路径：`~/.weclaw/config.json`
@@ -219,6 +265,13 @@ curl -X POST http://127.0.0.1:18011/api/send \
       "endpoint": "https://api.example.com/v1/chat/completions",
       "api_key": "sk-xxx",
       "model": "openclaw:main"
+    },
+    "opencode-serve": {
+      "type": "serve",
+      "command": "/usr/local/bin/opencode",
+      "args": ["serve", "--port", "4096", "--hostname", "127.0.0.1"],
+      "host": "127.0.0.1",
+      "port": 4096
     }
   }
 }
@@ -233,6 +286,23 @@ curl -X POST http://127.0.0.1:18011/api/send \
 | `api_key` | string | API 认证密钥（可选，公网部署建议启用） |
 | `save_dir` | string | 下载图片/文件的保存目录 |
 | `agents` | object | Agent 配置 |
+
+**Agent 配置字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | Agent 类型：`acp` `cli` `http` `serve` |
+| `command` | string | 二进制路径（acp/cli/serve）或端点 URL（http） |
+| `args` | []string | 额外参数 |
+| `model` | string | 模型名称 |
+| `aliases` | []string | 自定义别名 |
+| `cwd` | string | 工作目录 |
+| `env` | object | 环境变量键值对 |
+| `endpoint` | string | HTTP 端点（仅 http 类型） |
+| `api_key` | string | HTTP API 密钥（仅 http 类型） |
+| `headers` | object | HTTP 额外请求头（仅 http 类型） |
+| `host` | string | 监听地址（仅 serve 类型，默认 127.0.0.1） |
+| `port` | int | 监听端口（仅 serve 类型，默认 8080） |
 
 环境变量：
 
@@ -290,6 +360,23 @@ curl -X POST http://127.0.0.1:18011/api/send \
 通过 `cwd` 指定 Agent 的工作目录（workspace）。不设置则默认为 `~/.weclaw/workspace`。
 
 > **注意：** 这些参数会跳过安全检查，请了解风险后再启用。ACP 模式的 Agent 会自动处理权限，无需配置。
+
+## CLI 命令速查
+
+| 命令 | 说明 |
+|------|------|
+| `weclaw` | 等同于 `weclaw start` |
+| `weclaw start [-f]` | 启动桥接服务（`-f` 前台运行） |
+| `weclaw stop` | 停止后台服务 |
+| `weclaw restart` | 重启服务 |
+| `weclaw status` | 查看运行状态 |
+| `weclaw login` | 添加微信账号（扫码登录） |
+| `weclaw send` | 主动发送消息 |
+| `weclaw agent *` | Agent 管理子命令 |
+| `weclaw config show` | 查看完整配置 |
+| `weclaw session *` | 会话管理子命令 |
+| `weclaw update` | 更新到最新版本 |
+| `weclaw version` | 查看版本号 |
 
 ## 后台运行
 

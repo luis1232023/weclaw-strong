@@ -46,11 +46,12 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 
 **Agent modes:**
 
-| Mode | How it works | Examples |
-|------|-------------|----------|
-| ACP  | Long-running subprocess, JSON-RPC over stdio. Fastest — reuses process and sessions. | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw |
-| CLI  | Spawns a new process per message. Supports session resume via `--resume`. | Claude (`claude -p`), Codex (`codex exec`) |
-| HTTP | OpenAI-compatible chat completions API. | OpenClaw (HTTP fallback) |
+| Mode  | How it works | Examples |
+|-------|-------------|----------|
+| ACP   | Long-running subprocess, JSON-RPC over stdio. Fastest — reuses process and sessions. | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw |
+| CLI   | Spawns a new process per message. Supports session resume via `--resume`. | Claude (`claude -p`), Codex (`codex exec`) |
+| HTTP  | OpenAI-compatible chat completions API. | OpenClaw (HTTP fallback) |
+| Serve | `opencode serve` subprocess + REST API. | OpenCode (serve mode with session management) |
 
 Auto-detection picks ACP over CLI when both are available.
 
@@ -61,25 +62,28 @@ Send these as WeChat messages:
 | Command | Description |
 |---------|-------------|
 | `hello` | Send to default agent |
-| `/codex write a function` | Send to a specific agent |
+| `/claude write a function` | Send to a specific agent |
 | `/cc explain this code` | Send to agent by alias |
+| `/cc @cx help analyze` | Broadcast to multiple agents in parallel |
 | `/claude` | Switch default agent to Claude |
 | `/cwd /path/to/project` | Switch workspace directory |
-| `/new` | Start a new conversation (clear session) |
+| `/new` or `/clear` | Start a new conversation (clear session) |
 | `/info` | Show current agent info |
+| `/session list [N]` | List recent N sessions |
+| `/session switch <id>` | Switch to a specific session |
 | `/help` | Show help message |
 
 ### Aliases
 
-| Alias | Agent |
-|-------|-------|
-| `/cc` | claude |
-| `/cx` | codex |
-| `/cs` | cursor |
-| `/km` | kimi |
-| `/gm` | gemini |
-| `/ocd` | opencode |
-| `/oc` | openclaw |
+| Alias | Agent | Alias | Agent |
+|-------|-------|-------|-------|
+| `/cc` | claude | `/pi` | pi |
+| `/cx` | codex | `/cp` | copilot |
+| `/cs` | cursor | `/dr` | droid |
+| `/km` | kimi | `/if` | iflow |
+| `/gm` | gemini | `/kr` | kiro |
+| `/ocd` | opencode | `/qw` | qwen |
+| `/oc` | openclaw | `/ocs` | opencode-serve |
 
 You can also define custom aliases per agent in config:
 
@@ -187,6 +191,48 @@ curl -X POST http://127.0.0.1:18011/api/send \
 
 > **Note:** When `api_key` is not configured, the API remains open for backward compatibility. Recommended for local development only. Always enable authentication for public deployments.
 
+## CLI Agent Management
+
+Instead of editing the config file directly, you can manage agents via CLI:
+
+```bash
+# List all configured agents
+weclaw agent list
+
+# Show agent details
+weclaw agent info claude
+
+# Add a new agent
+weclaw agent add myagent \
+  --type acp \
+  --command /usr/local/bin/myagent \
+  --model gpt-4 \
+  --alias my,m \
+  --cwd /workspace
+
+# Remove an agent
+weclaw agent remove myagent
+
+# Set default agent
+weclaw agent set-default claude
+
+# Test agent connectivity
+weclaw agent test claude --message "hello"
+```
+
+**Supported agent types:** `acp` | `cli` | `http` | `serve`
+
+View and modify configuration:
+
+```bash
+# Show full configuration
+weclaw config show
+
+# Session management (requires running weclaw)
+weclaw session list
+weclaw session switch <session-id>
+```
+
 ## Configuration
 
 Config file: `~/.weclaw/config.json`
@@ -218,6 +264,13 @@ Config file: `~/.weclaw/config.json`
       "endpoint": "https://api.example.com/v1/chat/completions",
       "api_key": "sk-xxx",
       "model": "openclaw:main"
+    },
+    "opencode-serve": {
+      "type": "serve",
+      "command": "/usr/local/bin/opencode",
+      "args": ["serve", "--port", "4096", "--hostname", "127.0.0.1"],
+      "host": "127.0.0.1",
+      "port": 4096
     }
   }
 }
@@ -232,6 +285,23 @@ Config file: `~/.weclaw/config.json`
 | `api_key` | string | API authentication key (optional, recommended for public deployments) |
 | `save_dir` | string | Directory to save downloaded images/files |
 | `agents` | object | Agent configurations |
+
+**Agent configuration fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Agent type: `acp` `cli` `http` `serve` |
+| `command` | string | Binary path (acp/cli/serve) or endpoint URL (http) |
+| `args` | []string | Extra arguments |
+| `model` | string | Model name |
+| `aliases` | []string | Custom aliases |
+| `cwd` | string | Working directory |
+| `env` | object | Environment variables key-value pairs |
+| `endpoint` | string | HTTP endpoint (http type only) |
+| `api_key` | string | HTTP API key (http type only) |
+| `headers` | object | Extra HTTP headers (http type only) |
+| `host` | string | Listen host (serve type only, default 127.0.0.1) |
+| `port` | int | Listen port (serve type only, default 8080) |
 
 Environment variables:
 - `WECLAW_DEFAULT_AGENT` — override default agent
@@ -288,6 +358,23 @@ Example:
 Set `cwd` to specify the agent's working directory (workspace). If omitted, defaults to `~/.weclaw/workspace`.
 
 > **Warning:** These flags disable safety checks. Only enable them if you understand the risks. ACP agents handle permissions automatically and don't need these flags.
+
+## CLI Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `weclaw` | Same as `weclaw start` |
+| `weclaw start [-f]` | Start bridge service (`-f` for foreground) |
+| `weclaw stop` | Stop background service |
+| `weclaw restart` | Restart service |
+| `weclaw status` | Check running status |
+| `weclaw login` | Add WeChat account (QR scan) |
+| `weclaw send` | Send proactive message |
+| `weclaw agent *` | Agent management subcommands |
+| `weclaw config show` | Show full configuration |
+| `weclaw session *` | Session management subcommands |
+| `weclaw update` | Update to latest version |
+| `weclaw version` | Show version |
 
 ## Background Mode
 
